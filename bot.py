@@ -1,11 +1,15 @@
+import os
 import asyncio
 import logging
+from dotenv import load_dotenv # Нужно установить: pip install python-dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, CommandObject
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
+load_dotenv() # Загружаем секреты из файла .env
+
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "8407680010:AAGnGWwH7ufhqx_acI6k-gdPndC5Knd7ajg" 
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 932894269  # Твой личный ID
 # -----------------
 
