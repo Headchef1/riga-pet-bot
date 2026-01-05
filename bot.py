@@ -137,10 +137,11 @@ async def handle_report_click(callback: CallbackQuery):
     user_id = callback.from_user.id
     lang = callback.from_user.language_code
     reason_code = callback.data
+    
+    # 1. Получаем имя места. Если его нет — будет "Unknown Place"
     place_name = user_reports.get(user_id, "Unknown Place")
     safe_place_name = html.escape(place_name)
     
-    # Маппинг кодов к ключам перевода
     reason_keys = {
         "report_closed": "reason_closed",
         "report_not_allowed": "reason_not_allowed",
@@ -151,37 +152,34 @@ async def handle_report_click(callback: CallbackQuery):
     if reason_code == "report_other":
         text = get_text(lang, "write_text").format(place=safe_place_name)
         await callback.message.edit_text(text, parse_mode="HTML")
+        # Тут тоже НЕ удаляем user_reports, чтобы пользователь мог дописать текст
         return
 
-    # Получаем текст причины на языке ПОЛЬЗОВАТЕЛЯ для ответа ему
     user_reason_text = get_text(lang, reason_keys.get(reason_code, "err_decoding"))
-    
-    # Получаем текст причины на РУССКОМ для админа (чтобы тебе было понятно)
     admin_reason_text = get_text("ru", reason_keys.get(reason_code, "err_decoding"))
     
-    # Отправляем отчет админу
     admin_text = (
         f"📩 <b>НОВАЯ ЖАЛОБА</b>\n"
         f"📍 Место: <b>{safe_place_name}</b>\n"
-        f"⚠️ Причина: {admin_reason_text}\n" # Админу всегда на понятном языке
+        f"⚠️ Причина: {admin_reason_text}\n"
         f"👤 От: {callback.from_user.full_name} (@{callback.from_user.username}) [{lang}]"
     )
     
     try:
         await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML")
         
-        # Ответ пользователю на ЕГО языке
         user_response = get_text(lang, "thanks").format(place=safe_place_name, reason=user_reason_text)
+        # Редактируем сообщение, чтобы убрать кнопки (тогда нажать второй раз не получится)
         await callback.message.edit_text(user_response, parse_mode="HTML")
         
     except Exception as e:
         logging.error(f"Failed to send report to admin: {e}")
         await callback.message.answer("Error.")
     
-    if user_id in user_reports:
-        del user_reports[user_id]
+    # СТРОКИ УДАЛЕНИЯ (del user_reports[user_id]) УБРАНЫ ОТСЮДА
         
     await callback.answer()
+
 
 @dp.message()
 async def handle_text(message: Message):
