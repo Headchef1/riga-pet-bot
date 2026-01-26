@@ -6,7 +6,15 @@ import html
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, CommandObject
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import (
+    Message, 
+    InlineKeyboardMarkup, 
+    InlineKeyboardButton, 
+    CallbackQuery,
+    ReplyKeyboardMarkup, 
+    KeyboardButton, 
+    WebAppInfo
+)
 from dotenv import load_dotenv
 
 # --- НАСТРОЙКИ ---
@@ -19,8 +27,11 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Теперь будем хранить словарь: {user_id: {"name": "Place", "address": "Street 1"}}
+# Хранилище: {user_id: {"name": "Place", "address": "Street 1"}}
 user_reports = {} 
+
+# URL вашего Web App
+WEB_APP_URL = "https://headchef1.github.io/riga-pet-map/"
 
 # --- ЛОКАЛИЗАЦИЯ ---
 LOCALIZATION = {
@@ -39,7 +50,8 @@ LOCALIZATION = {
         "reason_closed": "Closed forever",
         "reason_not_allowed": "Dogs not allowed",
         "reason_location": "Wrong location",
-        "reason_info": "Wrong info"
+        "reason_info": "Wrong info",
+        "open_map": "🗺️ Open Map"
     },
     "ru": {
         "welcome": "Привет! Нажмите кнопку меню, чтобы открыть карту 🗺️",
@@ -56,7 +68,8 @@ LOCALIZATION = {
         "reason_closed": "Закрылось навсегда",
         "reason_not_allowed": "Не пускают с собакой",
         "reason_location": "Неверная геолокация",
-        "reason_info": "Ошибка в описании"
+        "reason_info": "Ошибка в описании",
+        "open_map": "🗺️ Открыть карту"
     },
     "lv": {
         "welcome": "Sveiki! Nospiediet izvēlnes pogu, lai atvērtu karti 🗺️",
@@ -73,7 +86,8 @@ LOCALIZATION = {
         "reason_closed": "Slēgts uz visiem laikiem",
         "reason_not_allowed": "Ar suni neielaiž",
         "reason_location": "Nepareiza atrašanās vieta",
-        "reason_info": "Kļūda aprakstā"
+        "reason_info": "Kļūda aprakstā",
+        "open_map": "🗺️ Atvērt karti"
     }
 }
 
@@ -84,6 +98,16 @@ def get_text(user_lang_code, key):
         lang = user_lang_code[:2].lower()
     return LOCALIZATION.get(lang, LOCALIZATION["en"]).get(key, key)
 
+def get_main_keyboard(lang_code):
+    """Генерирует большую кнопку меню"""
+    btn_text = get_text(lang_code, "open_map")
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=btn_text, web_app=WebAppInfo(url=WEB_APP_URL))]
+        ],
+        resize_keyboard=True,
+        persistent=True
+    )
 
 # --- ХЕНДЛЕРЫ ---
 
@@ -104,20 +128,17 @@ async def cmd_start(message: Message, command: CommandObject):
             decoded_bytes = base64.urlsafe_b64decode(encoded_payload)
             decoded_str = decoded_bytes.decode('utf-8')
 
-            # --- ИЗМЕНЕНИЕ 1: Парсинг адреса ---
-            # Ожидаем формат: "Название места|Адрес"
+            # Парсинг адреса
             if "|" in decoded_str:
                 place_name, place_address = decoded_str.split("|", 1)
             else:
                 place_name = decoded_str
                 place_address = ""
             
-            # Сохраняем и имя, и адрес
             user_reports[message.from_user.id] = {
                 "name": place_name, 
                 "address": place_address
             }
-            # -----------------------------------
             
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text=get_text(lang, "btn_closed"), callback_data="report_closed")],
@@ -127,7 +148,6 @@ async def cmd_start(message: Message, command: CommandObject):
                 [InlineKeyboardButton(text=get_text(lang, "btn_other"), callback_data="report_other")]
             ])
             
-            # Формируем красивое название для пользователя (с адресом, если есть)
             display_name = place_name
             if place_address:
                 display_name = f"{place_name} ({place_address})"
@@ -135,13 +155,16 @@ async def cmd_start(message: Message, command: CommandObject):
             safe_place_name = html.escape(display_name)
             text = get_text(lang, "report_intro").format(place=safe_place_name)
             
+            # При жалобе мы НЕ отправляем reply_markup с большой кнопкой СРАЗУ,
+            # чтобы не сбивать фокус с инлайн-кнопок. Кнопку отправим после "Спасибо".
             await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
             
         except Exception as e:
             logging.error(f"CRITICAL ERROR decoding payload: {e}")
             await message.answer(get_text(lang, "err_decoding"))
     else:
-        await message.answer(get_text(lang, "welcome"))
+        # Просто старт - показываем кнопку
+        await message.answer(get_text(lang, "welcome"), reply_markup=get_main_keyboard(lang))
 
 
 @dp.callback_query(F.data.startswith("report_"))
@@ -150,10 +173,8 @@ async def handle_report_click(callback: CallbackQuery):
     lang = callback.from_user.language_code
     reason_code = callback.data
     
-    # --- ИЗМЕНЕНИЕ 2: Получение данных из новой структуры ---
     report_data = user_reports.get(user_id, {"name": "Unknown Place", "address": ""})
     
-    # Защита от старых данных (если вдруг в памяти осталась строка)
     if isinstance(report_data, str):
         place_name = report_data
         place_address = ""
@@ -161,10 +182,8 @@ async def handle_report_click(callback: CallbackQuery):
         place_name = report_data.get("name", "Unknown Place")
         place_address = report_data.get("address", "")
     
-    # Полное название для отображения пользователю
     full_display_name = f"{place_name} ({place_address})" if place_address else place_name
     safe_user_place_name = html.escape(full_display_name)
-    # --------------------------------------------------------
 
     reason_keys = {
         "report_closed": "reason_closed",
@@ -181,11 +200,9 @@ async def handle_report_click(callback: CallbackQuery):
     user_reason_text = get_text(lang, reason_keys.get(reason_code, "err_decoding"))
     admin_reason_text = get_text("ru", reason_keys.get(reason_code, "err_decoding"))
     
-    # --- ФОРМИРОВАНИЕ ОТЧЕТА ДЛЯ АДМИНА ---
     safe_name_only = html.escape(place_name)
     place_block = f"📍 Место: <b>{safe_name_only}</b>"
     
-    # Если адрес есть, добавляем его отдельной строкой
     if place_address:
         place_block += f"\n🏢 Адрес: <b>{html.escape(place_address)}</b>"
 
@@ -195,13 +212,20 @@ async def handle_report_click(callback: CallbackQuery):
         f"⚠️ Причина: {admin_reason_text}\n"
         f"👤 От: {callback.from_user.full_name} (@{callback.from_user.username}) [{lang}]"
     )
-    # --------------------------------------
     
     try:
         await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML")
         
         user_response = get_text(lang, "thanks").format(place=safe_user_place_name, reason=user_reason_text)
         await callback.message.edit_text(user_response, parse_mode="HTML")
+        
+        # --- ВАЖНО: Восстанавливаем кнопку меню после жалобы ---
+        # Отправляем тихое сообщение или просто обновляем интерфейс, если нужно.
+        # Но самый надежный способ обновить клавиатуру - отправить сообщение.
+        # Чтобы не спамить, можно не отправлять, если мы уверены, что она есть.
+        # Но для надежности отправим (например, "Карта доступна ниже")
+        await callback.message.answer("🗺️", reply_markup=get_main_keyboard(lang))
+        # ------------------------------------------------------
         
     except Exception as e:
         logging.error(f"Failed to send report to admin: {e}")
@@ -218,7 +242,6 @@ async def handle_text(message: Message):
     lang = message.from_user.language_code
     
     if user_id in user_reports:
-        # --- ИЗМЕНЕНИЕ 3: Аналогично для текстовой жалобы ---
         report_data = user_reports[user_id]
         if isinstance(report_data, str):
             place_name = report_data
@@ -238,14 +261,20 @@ async def handle_text(message: Message):
             f"💬 Текст: {html.escape(message.text)}\n"
             f"👤 От: {message.from_user.full_name} (@{message.from_user.username}) [{lang}]"
         )
-        # ----------------------------------------------------
         
         await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML")
         await message.answer(get_text(lang, "msg_sent"))
         
+        # После текстовой жалобы тоже возвращаем кнопку
+        await message.answer("🗺️", reply_markup=get_main_keyboard(lang))
+        
         del user_reports[user_id]
+    else:
+        # Если пишут просто так - предлагаем карту
+        await message.answer(get_text(lang, "welcome"), reply_markup=get_main_keyboard(lang))
 
-# --- ВЕБ-СЕРВЕР (без изменений) ---
+
+# --- ВЕБ-СЕРВЕР ---
 async def health_check(request):
     return web.Response(text="Bot is running!")
 
