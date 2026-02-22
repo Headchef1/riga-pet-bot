@@ -7,7 +7,15 @@ import json
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, CommandObject
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import (
+    Message, 
+    InlineKeyboardMarkup, 
+    InlineKeyboardButton, 
+    CallbackQuery,
+    ReplyKeyboardMarkup, 
+    KeyboardButton, 
+    WebAppInfo
+)
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -87,6 +95,16 @@ def get_text(user_lang_code, key):
         lang = 'en'
     return LOCALIZATION.get(lang, LOCALIZATION['en']).get(key, key)
 
+def get_main_keyboard(lang_code):
+    """Генерирует большую кнопку меню"""
+    btn_text = get_text(lang_code, "open_map")
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=btn_text, web_app=WebAppInfo(url=WEB_APP_URL))]
+        ],
+        resize_keyboard=True,
+        persistent=True
+    )
 
 # --- TELEGRAM BOT HANDLERS ---
 @dp.message(CommandStart())
@@ -208,6 +226,10 @@ async def handle_text_message(message: Message):
             
         await message.answer(get_text(lang, 'msg_sent'))
         del user_reports[user_id]
+    else:
+        # Если пишут просто так - предлагаем карту
+        await message.answer(get_text(lang, "welcome"), reply_markup=get_main_keyboard(lang))
+
 
 
 # --- AIOHTTP WEB SERVER & API ---
