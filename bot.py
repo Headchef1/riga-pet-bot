@@ -95,17 +95,6 @@ def get_text(user_lang_code, key):
         lang = 'en'
     return LOCALIZATION.get(lang, LOCALIZATION['en']).get(key, key)
 
-def get_main_keyboard(lang_code):
-    """Генерирует большую кнопку меню"""
-    btn_text = get_text(lang_code, "open_map")
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=btn_text, web_app=WebAppInfo(url=WEB_APP_URL))]
-        ],
-        resize_keyboard=True,
-        persistent=True
-    )
-
 # --- TELEGRAM BOT HANDLERS ---
 @dp.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject):
@@ -228,7 +217,7 @@ async def handle_text_message(message: Message):
         del user_reports[user_id]
     else:
         # Если пишут просто так - предлагаем карту
-        await message.answer(get_text(lang, "welcome"), reply_markup=get_main_keyboard(lang))
+        await message.answer(get_text(lang, "welcome"))
 
 
 
@@ -252,30 +241,47 @@ async def handle_options(request):
 async def api_add_place(request):
     try:
         data = await request.json()
-        name = html.escape(data.get('name', 'Unknown'))
+        name     = html.escape(data.get('name', 'Unknown'))
         category = html.escape(data.get('category', 'none'))
-        comment = html.escape(data.get('comment', ''))
-        lat = data.get('lat', 0.0)
-        lon = data.get('lon', 0.0)
+        comment  = html.escape(data.get('comment', ''))
+        lat      = data.get('lat', 0.0)
+        lon      = data.get('lon', 0.0)
         username = html.escape(data.get('username', 'anonymous'))
-        user_id = data.get('user_id', 0)
-        
+        user_id  = data.get('user_id', 0)
+
+        # Notify admin
         admin_msg = get_text("ru", "admin_new_place").format(
             name=name, category=category, comment=comment,
             username=username, user_id=user_id, lat=lat, lon=lon
         )
-        
+
         if ADMIN_ID != 0:
-            # Send message to admin with "Mark as added" inline button
             markup = InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="✅ Mark as Reviewed", callback_data="admin_reviewed")
             ]])
             await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML", reply_markup=markup)
-            
+
+        # Notify user in chat — send confirmation back to the person who submitted
+        if user_id and user_id != 0:
+            user_confirm = {
+                'en': f"✅ <b>Your submission has been received!</b>\n\nPlace: <b>{name}</b>\nWe'll review it and add to the map soon. Thank you! 🐾",
+                'ru': f"✅ <b>Заявка принята!</b>\n\nМесто: <b>{name}</b>\nМы проверим и скоро добавим на карту. Спасибо! 🐾",
+                'lv': f"✅ <b>Pieteikums saņemts!</b>\n\nVieta: <b>{name}</b>\nMēs to pārbaudīsim un drīz pievienosim kartei. Paldies! 🐾"
+            }
+            # We don't know user lang here, send in all? No — default to RU as target audience
+            # Better: frontend can pass lang in payload (future improvement)
+            msg_text = user_confirm.get('ru')
+            try:
+                await bot.send_message(user_id, msg_text, parse_mode="HTML")
+            except Exception as e:
+                logging.warning(f"Could not notify user {user_id}: {e}")
+
         return web.json_response({"status": "success"}, headers=get_cors_headers())
+
     except Exception as e:
         logging.error(f"API Error: {e}")
         return web.json_response({"status": "error", "message": str(e)}, status=400, headers=get_cors_headers())
+
 
 # Simple callback for admin review button
 @dp.callback_query(F.data == "admin_reviewed")
