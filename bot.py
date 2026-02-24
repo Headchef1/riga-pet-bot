@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import base64
 import html
 import json
@@ -8,12 +9,12 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, CommandObject
 from aiogram.types import (
-    Message, 
-    InlineKeyboardMarkup, 
-    InlineKeyboardButton, 
+    Message,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
     CallbackQuery,
-    ReplyKeyboardMarkup, 
-    KeyboardButton, 
+    ReplyKeyboardMarkup,
+    KeyboardButton,
     WebAppInfo
 )
 from dotenv import load_dotenv
@@ -21,15 +22,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+ADMIN_ID  = int(os.getenv("ADMIN_ID", "0"))
 
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+dp  = Dispatcher()
+
+# Allowed name characters: Latin, Cyrillic, Latvian extended (U+0100-U+017F),
+# digits, space, hyphen, apostrophe. Max 50 chars.
+NAME_PATTERN = re.compile(r"^[a-zA-Zа-яА-ЯёЁ\u0100-\u017F0-9 \-']{1,50}$")
 
 # Memory storage for tracking user reports in progress
 user_reports = {}
+
 
 # --- LOCALIZATION ---
 LOCALIZATION = {
@@ -89,18 +95,27 @@ LOCALIZATION = {
     }
 }
 
+# User confirmation messages — keyed by lang, support {name} placeholder
+USER_CONFIRM = {
+    'en': "✅ <b>Your submission has been received!</b>\n\nPlace: <b>{name}</b>\nWe'll review it and add to the map soon. Thank you! 🐾",
+    'ru': "✅ <b>Заявка принята!</b>\n\nМесто: <b>{name}</b>\nМы проверим и скоро добавим на карту. Спасибо! 🐾",
+    'lv': "✅ <b>Pieteikums saņemts!</b>\n\nVieta: <b>{name}</b>\nMēs to pārbaudīsim un drīz pievienosim kartei. Paldies! 🐾"
+}
+
+
 def get_text(user_lang_code, key):
     lang = user_lang_code[:2].lower() if user_lang_code else 'en'
     if lang not in LOCALIZATION:
         lang = 'en'
     return LOCALIZATION.get(lang, LOCALIZATION['en']).get(key, key)
 
+
 # --- TELEGRAM BOT HANDLERS ---
 @dp.message(CommandStart())
 async def cmd_start(message: Message, command: CommandObject):
     args = command.args
     lang = message.from_user.language_code
-    
+
     if args and args.startswith("error_"):
         try:
             encoded_payload = args.replace("error_", "")
@@ -108,66 +123,66 @@ async def cmd_start(message: Message, command: CommandObject):
             padding = len(encoded_payload) % 4
             if padding:
                 encoded_payload += "=" * (4 - padding)
-            
+
             decoded_bytes = base64.urlsafe_b64decode(encoded_payload)
-            decoded_str = decoded_bytes.decode('utf-8')
-            
-            place_name = decoded_str
+            decoded_str   = decoded_bytes.decode('utf-8')
+
+            place_name    = decoded_str
             place_address = ""
             if '|' in decoded_str:
                 place_name, place_address = decoded_str.split('|', 1)
-                
+
             user_reports[message.from_user.id] = {
                 "name": place_name,
                 "address": place_address
             }
-            
+
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=get_text(lang, 'btn_closed'), callback_data="report_closed")],
+                [InlineKeyboardButton(text=get_text(lang, 'btn_closed'),     callback_data="report_closed")],
                 [InlineKeyboardButton(text=get_text(lang, 'btn_notallowed'), callback_data="report_notallowed")],
-                [InlineKeyboardButton(text=get_text(lang, 'btn_location'), callback_data="report_location"),
-                 InlineKeyboardButton(text=get_text(lang, 'btn_info'), callback_data="report_info")],
-                [InlineKeyboardButton(text=get_text(lang, 'btn_other'), callback_data="report_other")]
+                [InlineKeyboardButton(text=get_text(lang, 'btn_location'),   callback_data="report_location"),
+                 InlineKeyboardButton(text=get_text(lang, 'btn_info'),       callback_data="report_info")],
+                [InlineKeyboardButton(text=get_text(lang, 'btn_other'),      callback_data="report_other")]
             ])
-            
+
             safe_place_name = html.escape(place_name)
             text = get_text(lang, 'report_intro').format(place=safe_place_name)
             await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
-            
+
         except Exception as e:
             logging.error(f"CRITICAL ERROR decoding payload: {e}")
             await message.answer(get_text(lang, 'err_decoding'))
     else:
         await message.answer(get_text(lang, 'welcome'))
 
+
 @dp.callback_query(F.data.startswith("report_"))
 async def handle_report_click(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    lang = callback.from_user.language_code
+    user_id     = callback.from_user.id
+    lang        = callback.from_user.language_code
     reason_code = callback.data
-    
-    report_data = user_reports.get(user_id, {"name": "Unknown Place", "address": ""})
-    place_name = report_data.get("name", "Unknown Place")
-    
+
+    report_data       = user_reports.get(user_id, {"name": "Unknown Place", "address": ""})
+    place_name        = report_data.get("name", "Unknown Place")
     safe_user_place_name = html.escape(place_name)
-    
+
     reason_keys = {
-        "report_closed": "reason_closed",
+        "report_closed":     "reason_closed",
         "report_notallowed": "reason_notallowed",
-        "report_location": "reason_location",
-        "report_info": "reason_info"
+        "report_location":   "reason_location",
+        "report_info":       "reason_info"
     }
-    
+
     if reason_code == "report_other":
         text = get_text(lang, 'write_text').format(place=safe_user_place_name)
         await callback.message.edit_text(text, parse_mode="HTML")
         return
-        
-    user_reason_text = get_text(lang, reason_keys.get(reason_code, "err_decoding"))
-    admin_reason_text = get_text("ru", reason_keys.get(reason_code, "err_decoding")) # Admin sees RU by default
-    
+
+    user_reason_text  = get_text(lang, reason_keys.get(reason_code, "err_decoding"))
+    admin_reason_text = get_text("ru", reason_keys.get(reason_code, "err_decoding"))  # Admin always sees RU
+
     place_block = f"<b>{html.escape(place_name)}</b>"
-    
+
     admin_text = (
         f"🚨 <b>Быстрый репорт</b>\n"
         f"Место: {place_block}\n"
@@ -175,33 +190,35 @@ async def handle_report_click(callback: CallbackQuery):
         f"От: {callback.from_user.full_name} (@{callback.from_user.username})\n"
         f"Язык юзера: {lang}"
     )
-    
+
     try:
         if ADMIN_ID != 0:
             await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML")
-        
-        user_response = get_text(lang, 'thanks').format(place=safe_user_place_name, reason=user_reason_text)
+
+        user_response = get_text(lang, 'thanks').format(
+            place=safe_user_place_name, reason=user_reason_text
+        )
         await callback.message.edit_text(user_response, parse_mode="HTML")
     except Exception as e:
         logging.error(f"Failed to send report to admin: {e}")
         await callback.message.answer("Error.")
-        
+
     await callback.answer()
+
 
 @dp.message()
 async def handle_text_message(message: Message):
     if message.text and message.text.lower().strip() in ["/start", "start"]:
         return
-        
+
     user_id = message.from_user.id
-    lang = message.from_user.language_code
-    
+    lang    = message.from_user.language_code
+
     if user_id in user_reports:
         report_data = user_reports[user_id]
-        place_name = report_data.get("name", "Unknown")
-        
+        place_name  = report_data.get("name", "Unknown")
         place_block = f"<b>{html.escape(place_name)}</b>"
-        
+
         admin_text = (
             f"📝 <b>Репорт текстом</b>\n"
             f"Место: {place_block}\n"
@@ -209,45 +226,71 @@ async def handle_text_message(message: Message):
             f"От: {message.from_user.full_name} (@{message.from_user.username})\n"
             f"Язык юзера: {lang}"
         )
-        
+
         if ADMIN_ID != 0:
             await bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML")
-            
+
         await message.answer(get_text(lang, 'msg_sent'))
         del user_reports[user_id]
     else:
-        # Если пишут просто так - предлагаем карту
         await message.answer(get_text(lang, "welcome"))
-
 
 
 # --- AIOHTTP WEB SERVER & API ---
 
-# Add CORS headers so frontend can POST from anywhere during dev
 def get_cors_headers():
+    # Add CORS headers so frontend can POST from anywhere during dev
     return {
-        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Origin':  '*',
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type'
     }
 
+
 async def health_check_request(request):
     return web.Response(text="Bot is running!", headers=get_cors_headers())
+
 
 async def handle_options(request):
     # Preflight request handler for CORS
     return web.Response(headers=get_cors_headers())
 
+
 async def api_add_place(request):
     try:
         data = await request.json()
-        name     = html.escape(data.get('name', 'Unknown'))
+
+        # --- Step 1: Backend validation (never trust frontend alone) ---
+        raw_name = data.get('name', '').strip()
+
+        if not raw_name:
+            return web.json_response(
+                {"status": "error", "message": "Name is required"},
+                status=400, headers=get_cors_headers()
+            )
+        if len(raw_name) > 50:
+            return web.json_response(
+                {"status": "error", "message": "Name must be 50 characters or less"},
+                status=400, headers=get_cors_headers()
+            )
+        if not NAME_PATTERN.match(raw_name):
+            return web.json_response(
+                {"status": "error", "message": "Name contains invalid characters"},
+                status=400, headers=get_cors_headers()
+            )
+        # --- End validation ---
+
+        name     = html.escape(raw_name)
         category = html.escape(data.get('category', 'none'))
-        comment  = html.escape(data.get('comment', ''))
+        comment  = html.escape(data.get('comment',  ''))
         lat      = data.get('lat', 0.0)
         lon      = data.get('lon', 0.0)
         username = html.escape(data.get('username', 'anonymous'))
         user_id  = data.get('user_id', 0)
+        # Frontend now sends 'lang' in payload — use it for user notification
+        user_lang = data.get('lang', 'ru')
+        if user_lang not in ('en', 'ru', 'lv'):
+            user_lang = 'ru'
 
         # Notify admin
         admin_msg = get_text("ru", "admin_new_place").format(
@@ -261,16 +304,9 @@ async def api_add_place(request):
             ]])
             await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML", reply_markup=markup)
 
-        # Notify user in chat — send confirmation back to the person who submitted
+        # Notify user in their language
         if user_id and user_id != 0:
-            user_confirm = {
-                'en': f"✅ <b>Your submission has been received!</b>\n\nPlace: <b>{name}</b>\nWe'll review it and add to the map soon. Thank you! 🐾",
-                'ru': f"✅ <b>Заявка принята!</b>\n\nМесто: <b>{name}</b>\nМы проверим и скоро добавим на карту. Спасибо! 🐾",
-                'lv': f"✅ <b>Pieteikums saņemts!</b>\n\nVieta: <b>{name}</b>\nMēs to pārbaudīsim un drīz pievienosim kartei. Paldies! 🐾"
-            }
-            # We don't know user lang here, send in all? No — default to RU as target audience
-            # Better: frontend can pass lang in payload (future improvement)
-            msg_text = user_confirm.get('ru')
+            msg_text = USER_CONFIRM.get(user_lang, USER_CONFIRM['ru']).format(name=name)
             try:
                 await bot.send_message(user_id, msg_text, parse_mode="HTML")
             except Exception as e:
@@ -280,21 +316,27 @@ async def api_add_place(request):
 
     except Exception as e:
         logging.error(f"API Error: {e}")
-        return web.json_response({"status": "error", "message": str(e)}, status=400, headers=get_cors_headers())
+        return web.json_response(
+            {"status": "error", "message": str(e)},
+            status=400, headers=get_cors_headers()
+        )
 
 
 # Simple callback for admin review button
 @dp.callback_query(F.data == "admin_reviewed")
 async def admin_review_cb(callback: CallbackQuery):
-    await callback.message.edit_text(callback.message.text + "\n\n<b>✅ REVIEWED</b>", parse_mode="HTML")
+    await callback.message.edit_text(
+        callback.message.text + "\n\n<b>✅ REVIEWED</b>", parse_mode="HTML"
+    )
     await callback.answer()
+
 
 async def start_web_server():
     app = web.Application()
     app.router.add_options('/api/add_place', handle_options)
-    app.router.add_post('/api/add_place', api_add_place)
-    app.router.add_get('/', health_check_request)
-    
+    app.router.add_post('/api/add_place',    api_add_place)
+    app.router.add_get('/',                  health_check_request)
+
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 8080))
@@ -302,11 +344,13 @@ async def start_web_server():
     await site.start()
     logging.info(f"Web server started on port {port}")
 
+
 async def main():
     await asyncio.gather(
         start_web_server(),
         dp.start_polling(bot)
     )
+
 
 if __name__ == "__main__":
     asyncio.run(main())
